@@ -1,0 +1,13 @@
+#clangd cahce
+.cache/
+
+#clion
+.idea/
+
+#vscode
+.vscode/
+
+#cmake build
+build/
+cmake-build-debug/
+
