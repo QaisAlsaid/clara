@@ -1,6 +1,6 @@
 # CL-[Ara](https://en.wikipedia.org/wiki/Ara_(constellation)) ✨
 
-Clara is a single-header C++23 command-line parser that’s light, powerful, and actually fun to use.
+Clara is a single-header C++23 command-line parser that’s light, powerful.
 it's UTF-8 friendly, and skips the build-system hassle.
 
 ## Why Clara?
