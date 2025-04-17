@@ -11,3 +11,5 @@
 build/
 cmake-build-debug/
 
+#current tests its just too bad
+tests/
