@@ -123,16 +123,10 @@ if (auto say = result.root.get_command("say")) {
 ## Coming Soon
 * Docs: Full breakdown of Clara’s tricks.
 * Tests: Proving it works (and doesn’t explode) which it does now!.
-* Refactor: Splitting parsing and evaluation, to support callbacks and limits (see below).
+* Refactor: Splitting parsing and evaluation, to support callbacks and limits.
 
 ## Windows Caveat
 Clara assumes UTF-8 everywhere, but Windows can be grumpy about it. Use a UTF-8 manifest or tweak your console settings. **We’ll smooth this out eventually!**
 
 ## License
 Clara’s [MIT licensed](LICENSE)
-
-## The Future: Parser Refactor
-Clara’s eyeing a split:
-
-* Parser: Turns args into a neat structure.
-* Evaluator: Checks limits, runs callbacks. Think “max 3 args for --list” or “-v triggers a log.” Ideas? Hit me up!
