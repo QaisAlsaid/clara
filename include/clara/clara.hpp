@@ -925,7 +925,9 @@ CLARA_SET_NAMESPACE
   {
     not_convertable,
     no_value,
-    not_found
+    not_found,
+    missing_required,
+    invalid_token
   };
 /*
   class value_storage
@@ -1015,18 +1017,26 @@ CLARA_SET_NAMESPACE
   // represents a single argument specification
   struct argument_spec 
   {
-    std::string name; // e.g. "url", "path"
+    // no named arguments anymore!
+    // std::string name; // e.g. "url", "path"
     bool required = false; // is this argument mandatory?
     std::string default_value; // default value if optional and not provided
+  };
+
+  enum class value_state 
+  {
+    present, // provided in input
+    defaulted, // provided in defaults
+    missing // no values or defaults
   };
 
   class value_storage 
   {
   public:
-    struct value_entry 
+    struct value_entry
     {
       std::string value;
-      bool present = false;  // was this value provided in the input?
+      value_state state = value_state::missing;
     };
 
     // default constructor
@@ -1034,16 +1044,16 @@ CLARA_SET_NAMESPACE
 
     // constructor with argument specs
     explicit value_storage(const std::vector<argument_spec>& specs)
-        : specs_(std::move(specs))
+        : m_specs(specs)
     {
-      values_.resize(specs_.size());
+      m_values.resize(m_specs.size());
       // populate the name to index map and initialize defaults
-      for(size_t i = 0; i < specs_.size(); ++i) 
+      for(size_t i = 0; i < m_specs.size(); ++i) 
       {
-        name_to_index_[specs_[i].name] = i;
-        if(!specs_[i].default_value.empty()) 
+        if(!m_specs[i].default_value.empty()) 
         {
-          values_[i].value = specs_[i].default_value;
+          m_values[i].value = m_specs[i].default_value;
+          m_values[i].state = value_state::defaulted;
         }
       }
     }
@@ -1051,22 +1061,21 @@ CLARA_SET_NAMESPACE
     // set values from parsed input
     void set_values(const std::vector<std::string>& input_values)
     {
-      for(size_t i = 0; i < input_values.size() && i < values_.size(); ++i) 
+      for(auto i = 0; i < input_values.size(); ++i)
       {
-        values_[i].value = std::move(input_values[i]);
-        values_[i].present = true;
+        m_values[i].value = input_values[i];
+        m_values[i].state = value_state::present;
       }
     }
 
-    // check if all required values are present
     bool is_valid() const 
     {
-      for(size_t i = 0; i < specs_.size(); ++i) 
+      for(size_t i = 0; i < m_specs.size(); ++i) 
       {
-        if(specs_[i].required && !values_[i].present) 
-        {
+        const auto& spec = m_specs[i];
+        const auto& entry = m_values[i];
+        if(spec.required && entry.state == value_state::missing) 
           return false;
-        }
       }
       return true;
     }
@@ -1074,38 +1083,18 @@ CLARA_SET_NAMESPACE
     // get value by position
     std::expected<std::string, convertion_state> get_raw(size_t pos) const
     {
-      if(pos >= values_.size()) 
+      if(pos >= m_values.size()) 
       {
         return std::unexpected(convertion_state::not_found);
       }
-      if(values_[pos].present)
+      if(m_values[pos].state == value_state::missing)
       {
-        return values_[pos].value;
+        return std::unexpected(convertion_state::no_value);
       }
-      if(!specs_[pos].default_value.empty())
-      {
-        return specs_[pos].default_value;
-      }
-      return std::unexpected(convertion_state::no_value);
+      return m_values[pos].value;
     }
 
-    // get value by name 
-    std::expected<std::string, convertion_state> get_raw(const std::string& name) const 
-    {
-      auto it = name_to_index_.find(name);
-      if(it == name_to_index_.end()) 
-      {
-        return std::unexpected(convertion_state::not_found);
-      }
-      size_t pos = it->second;
-      if(values_[pos].present || !specs_[pos].default_value.empty())
-      {
-        return values_[pos].value;
-      }
-      return std::unexpected(convertion_state::no_value);
-    }
-
-    // typed access by position
+    // typed access
     template <typename T>
     std::expected<T, convertion_state> get(size_t pos) const 
     {
@@ -1115,19 +1104,41 @@ CLARA_SET_NAMESPACE
       return conversion_traits<T>::convert(*raw);
     }
 
-    // typed access by name
-    template <typename T>
-    std::expected<T, convertion_state> get(const std::string& name) const 
+    // get all values as vector
+    template <typename T> 
+    std::expected<std::vector<T>, convertion_state> get_vector() const 
     {
-      auto raw = get_raw(name);
-      if(!raw) 
-        return std::unexpected(raw.error());
-      return conversion_traits<T>::convert(*raw);
+      std::vector<T> res;
+      for(auto i = 0; i < m_values.size(); ++i)
+      {
+        if(m_values[i].state != value_state::missing)
+        {
+          auto conv = conversion_traits<T>::convert(m_values[i].value);
+          if(!conv)
+            return std::unexpected(convertion_state::not_convertable);
+          
+          res.push_back(conv);
+        }
+      }
+      return res;
+    }
+
+    bool has_value(size_t pos) const 
+    {
+      return pos < m_values.size() && m_values[pos].state != value_state::missing;
+    }
+
+    size_t value_count() const 
+    {
+      size_t count = 0;
+      for(auto& entry : m_values)
+        if(entry.state != value_state::missing)
+          ++count;
+      return count;
     }
   private:
-    std::vector<argument_spec> specs_; // argument definitions
-    std::vector<value_entry> values_;  // positional values
-    std::unordered_map<std::string, size_t> name_to_index_;  // name to position mapping
+    std::vector<argument_spec> m_specs; // argument definitions
+    std::vector<value_entry> m_values;  // positional values
   };
 
   class option
@@ -1135,14 +1146,19 @@ CLARA_SET_NAMESPACE
   public:
     option() = default;
 
-    bool has_value() const 
+    bool has_value(size_t pos) const 
     { 
-      return m_value.is_valid(); 
+      return m_value.has_value(pos); 
     }
 
-    std::expected<std::string, convertion_state> get_raw(const std::string& name) const 
-    { 
-      return m_value.get_raw(name);
+    bool is_valid() const 
+    {
+      return m_value.is_valid();
+    }
+
+    size_t value_count() const 
+    {
+      return m_value.value_count();
     }
 
     std::expected<std::string, convertion_state> get_raw(size_t pos) const 
@@ -1152,68 +1168,18 @@ CLARA_SET_NAMESPACE
     }
 
     template <typename T>
-    std::expected<T, convertion_state> get(const std::string& name) const
-    {
-      return m_value.get<T>(name);
-      /*
-      if(!m_value.empty())
-      {
-        auto r = get<T>(m_value);
-        if(r.second)
-          return r.first;
-
-        return std::unexpected(convertion_state::not_convertable);
-      }
-      return std::unexpected(convertion_state::no_value);
-   */ 
-    }
-
-    template <typename T>
     std::expected<T, convertion_state> get(size_t pos) const 
     {
       return m_value.get<T>(pos);
     }
 
-    /*
     template <typename T>
-    std::expected<std::vector<T>, convertion_state> get_vector() const
+    std::expected<std::vector<T>, convertion_state> get_vector() const 
     {
-      if(m_value.empty())
-        return std::unexpected(convertion_state::no_value);
-
-      std::vector<T> vec;
-      size_t last_d = 0;
-      for(auto i = 0; i < m_value.size(); i++)
-      {
-        if(m_value[i] == ' ')
-        {
-          auto r = get<T>(m_value.substr(last_d, i));
-          if(r.second)
-          {
-            vec.emplace_back(r.first);
-            last_d = i;
-          }
-          else
-          {
-            return std::unexpected(convertion_state::no_value);
-          }
-        }
-      }
-
-      if(last_d < m_value.size())
-      {
-        auto r = get<T>(m_value.substr(last_d));
-        if(r.second)
-          vec.emplace_back(r.first);
-      }
-
-      return vec;
+      return m_value.get_vector<T>();
     }
-*/
   private:
     value_storage m_value;
-
-  private:
     friend class parser;
   };
 
@@ -1231,83 +1197,41 @@ CLARA_SET_NAMESPACE
   public:
     command() = default;
 
-    bool has_value() const 
+    bool has_value(size_t pos) const 
     { 
-      return m_value.is_valid(); 
+      return m_value.has_value(pos); 
     }
 
-    std::expected<std::string, convertion_state> get_raw(const std::string& name) const 
-    { 
-      return m_value.get_raw(name); 
+    bool is_valid() const 
+    {
+      return m_value.is_valid();
+    }
+
+    size_t value_count() const 
+    {
+      return m_value.value_count();
     }
 
     std::expected<std::string, convertion_state> get_raw(size_t pos) const 
     { 
-      return m_value.get_raw(pos); 
+      // maybe default to pos = 0
+      return m_value.get_raw(pos);
     }
 
     template <typename T>
-    std::expected<T, convertion_state> get(const std::string& name) const
-    {
-      return m_value.get<T>(name);
-      /*
-      if(!m_value.empty())
-      {
-        auto r = get<T>(m_value);
-        if(r.second)
-          return r.first;
-
-        return std::unexpected(convertion_state::not_convertable);
-      }
-      return std::unexpected(convertion_state::no_value);
-      */
-    }
-
-    template <typename T> 
-    std::expected<T, convertion_state> get(size_t pos) const
+    std::expected<T, convertion_state> get(size_t pos) const 
     {
       return m_value.get<T>(pos);
     }
 
-    /*
-    template <typename T> std::expected<T, void> get_vector() const
+    template <typename T>
+    std::expected<std::vector<T>, convertion_state> get_vector() const 
     {
-      // FIXME: D.R.Y
-      if(m_value.empty())
-        return std::unexpected(convertion_state::no_value);
-
-      std::vector<T> vec;
-      size_t last_d = 0;
-      for(auto i = 0; i < m_value.size(); i++)
-      {
-        if(m_value[i] == ' ')
-        {
-          auto r = get<T>(m_value.substr(last_d, i));
-          if(r.second)
-          {
-            vec.emplace_back(r.first);
-            last_d = i;
-          }
-          else
-          {
-            return std::unexpected(convertion_state::no_value);
-          }
-        }
-      }
-
-      if(last_d < m_value.size())
-      {
-        auto r = get<T>(m_value.substr(last_d));
-        if(r.second)
-          vec.emplace_back(r.first);
-      }
-
-      return vec;
+      return m_value.get_vector<T>();
     }
-*/
 
-    std::expected<std::reference_wrapper<command>, convertion_state>
-    get_command(const std::string& name)
+
+    std::expected<std::reference_wrapper<command>, convertion_state> get_command(const std::string& name)
     {
       const auto cmd_it = m_commands.find(name);
       if(m_commands.end() != cmd_it)
@@ -1316,8 +1240,7 @@ CLARA_SET_NAMESPACE
       return std::unexpected(convertion_state::not_found);
     }
 
-    std::expected<std::reference_wrapper<option>, convertion_state>
-    get_option(const std::string& name)
+    std::expected<std::reference_wrapper<option>, convertion_state> get_option(const std::string& name)
     {
       const auto opt_it = m_options.find(name);
       if(m_options.end() != opt_it)
@@ -1326,8 +1249,7 @@ CLARA_SET_NAMESPACE
       return std::unexpected(convertion_state::not_found);
     }
 
-    std::expected<std::reference_wrapper<flag>, convertion_state>
-    get_flag(const std::string& name)
+    std::expected<std::reference_wrapper<flag>, convertion_state> get_flag(const std::string& name)
     {
       const auto flag_it = m_flags.find(name);
       if(m_flags.end() != flag_it)
@@ -1375,38 +1297,27 @@ CLARA_SET_NAMESPACE
   public:
     option_builder() = default;
 
-    option_builder& requires_value(bool req = true) // e.g. git submodule add <url> <path>
+    option_builder& requires_values(int min, int max = -1, const std::vector<std::string>& defaults = {})
     {
-      if(req)
-        m_min_values_limit = 1; // requires one value
-      else
+      m_arguments.clear();
+      auto default_count = defaults.size();
+      auto spec_count = std::max<size_t>(min, max == -1 ? default_count : max);
+      for(auto i = 0; i < spec_count; ++i)
       {
-        m_min_values_limit = 0;
-        m_max_values_limit = 0;
+        argument_spec spec;
+        spec.required = i < min;
+        if(i < default_count)
+          spec.default_value = defaults[i];
+        m_arguments.push_back(spec);
       }
-      return *this;
-    }
-
-    option_builder& allows_multiple(bool allow = true)
-    {
-      if(allow)
-        m_max_values_limit = -1; // indecates unknown multiple values
-      else
-        m_max_values_limit = 1;
-
-      return *this;
-    }
-
-    option_builder& set_min_limit(int min) // requires the value to be unsigned
-    {
       m_min_values_limit = min;
-      return *this;
-    }
-
-    option_builder& set_max_limit(int max)
-    {
       m_max_values_limit = max;
       return *this;
+    }
+    
+    const std::vector<argument_spec>& get_arguments() const 
+    {
+      return m_arguments;
     }
 
     int get_min_limit() const 
@@ -1426,24 +1337,6 @@ CLARA_SET_NAMESPACE
       m_alias_opts = opt;
       return *this;
     }
-
-    option_builder& add_argument(const std::string& name, bool required = false, std::string default_value = "") 
-    {
-      m_arguments.push_back({ name, required, std::move(default_value) });
-      m_min_values_limit = 0;
-      m_max_values_limit = static_cast<int>(m_arguments.size());
-      for(const auto& arg : m_arguments) 
-      {
-        if(arg.required) 
-          m_min_values_limit++;
-      }
-      return *this;
-    }
-
-    const std::vector<argument_spec>& get_arguments() const 
-    { 
-      return m_arguments; 
-    }
   private:
     option_builder(command_builder* parent, const std::string& name)
       : m_parent(parent), m_name(name)
@@ -1456,7 +1349,7 @@ CLARA_SET_NAMESPACE
     std::string m_name;
     int m_min_values_limit{0};
     int m_max_values_limit{0};
-  private:
+  
     friend class parser;
     friend class command_builder;
   };
@@ -1468,8 +1361,7 @@ CLARA_SET_NAMESPACE
 
   public:
     // new one for the added command
-    command_builder&
-    add_subcommand(const std::string& name) // e.g. git submodule
+    command_builder& add_subcommand(const std::string& name) // e.g. git submodule
     {
       auto& sub = m_subcommands[name];
       sub.m_debug_name = name; // debug only
@@ -1490,49 +1382,27 @@ CLARA_SET_NAMESPACE
       return *this;
     }
 
-    command_builder& requires_value(
-      bool req = true) // e.g. git submodule add <url> <path>
-                       // this could require a value of type string array
+    command_builder& requires_values(int min, int max = -1, const std::vector<std::string>& defaults = {})
     {
-      if(req)
-        m_min_values_limit = 1; // requires one value
-      else
+      m_arguments.clear();
+      auto default_count = defaults.size();
+      auto spec_count = std::max<size_t>(min, max == -1 ? default_count : max);
+      for(auto i = 0; i < spec_count; ++i)
       {
-        m_min_values_limit = 0;
-        m_max_values_limit = 0;
+        argument_spec spec;
+        spec.required = i < min;
+        if(i < default_count)
+          spec.default_value = defaults[i];
+        m_arguments.push_back(spec);
       }
-
-      return *this;
-    }
-
-    command_builder& allows_multiple(bool allow = true)
-    {
-      if(allow)
-        m_max_values_limit = -1; // indecates unknown multiple values
-      else
-        m_max_values_limit = 1;
-
-      return *this;
-    }
-
-    command_builder&
-    set_min_limit(uint8_t min) // requires the value to be unsigned
-    {
       m_min_values_limit = min;
-      return *this;
-    }
-
-    command_builder& set_max_limit(uint8_t max)
-    {
       m_max_values_limit = max;
       return *this;
     }
-
-    command_builder& set_option_alias(const std::string& alias_name,
-                                      const std::string& option_name) // TODO: clash resulotion config
+    
+    const std::vector<argument_spec>& get_arguments() const 
     {
-      m_options_aliases[alias_name] = option_name;
-      return *this;
+      return m_arguments;
     }
 
     int get_min_limit() const 
@@ -1544,25 +1414,14 @@ CLARA_SET_NAMESPACE
     { 
       return m_max_values_limit; 
     }
-    
-    command_builder& add_argument(const std::string& name, bool required = false,
-                                  std::string default_value = "") 
+
+    command_builder& set_option_alias(const std::string& alias_name,
+                                      const std::string& option_name) // TODO: clash resulotion config
     {
-      m_arguments.push_back({name, required, std::move(default_value)});
-      m_min_values_limit = 0;
-      m_max_values_limit = static_cast<char>(m_arguments.size());
-      for(const auto& arg : m_arguments)
-      {
-        if (arg.required) m_min_values_limit++;
-      }
+      m_options_aliases[alias_name] = option_name;
       return *this;
     }
-
-    const std::vector<argument_spec>& get_arguments() const 
-    { 
-      return m_arguments; 
-    }
-  public: // private:
+  public: // private: wtf is this?
     command_builder() = default;
   private:
     std::vector<argument_spec> m_arguments;
@@ -1719,11 +1578,18 @@ CLARA_SET_NAMESPACE
       invalid,
       subcommand
     };
+
     enum class alias_policy
     {
       override, // alias replaces existing option
       error,    // error on clash
       ignore    // ignore alias if it clashes
+    };
+    
+    struct parsed_values
+    {
+      std::vector<std::string> values;
+      bool valid = true;
     };
   private:
     parse_resault parse()
@@ -1964,15 +1830,23 @@ CLARA_SET_NAMESPACE
           return false;
         }
         advance();
-
         // we are now at the token after the identifire (might be assign or
         // space) or both
-        if(!parse_value_s(opt.m_value, opt_build.get_min_limit(), opt_build.get_max_limit()))
-          return false;
+        auto parsed = parse_values(opt_build.m_min_values_limit, opt_build.m_max_values_limit);
+        if(!parsed.valid)
+          return false; //TODO: check here if it is in valid pos or not for advance
+
+        opt.m_value.set_values(parsed.values);
       }
       else 
       {
         advance();
+      }
+
+      if(!opt.m_value.is_valid())
+      {
+        set_missing_value("required argument missing/invalid");
+        return false; //TODO: and also here for advance
       }
 
       save_option(opt_name, opt);
@@ -2236,12 +2110,21 @@ CLARA_SET_NAMESPACE
         advance();
 
         // we are now at the next token after the option
-        if(!parse_value_s(cmd.m_value, cmd_build.get_min_limit(), cmd_build.get_max_limit()))
+        auto parsed = parse_values(cmd_build.m_min_values_limit, cmd_build.m_max_values_limit);
+        if(parsed.valid)
           return false;
+
+        cmd.m_value.set_values(parsed.values);
       }
       else
       {
         advance();
+      }
+
+      if(!cmd.m_value.is_valid())
+      {
+        set_missing_value("required argument missing/invalid");
+        return false; //TODO: check for advance
       }
 
       // TODO: refactor this so you add it first and work on the reference
@@ -2736,7 +2619,7 @@ CLARA_SET_NAMESPACE
       return true;
     }
 */
-    bool parse_value_s(value_storage& val, int min, int max)
+    bool parse_value_s_(value_storage& val, int min, int max)
     {
       if(m_current_token.type == detail::token_type::space) 
         advance();
@@ -2785,6 +2668,43 @@ CLARA_SET_NAMESPACE
         return false;
       }
       return true;
+    }
+ 
+    parsed_values parse_values(int min, int max)
+    {
+      parsed_values res;
+      if(max == -1)
+        max = INT_MAX;
+      int value_count = 0;
+
+      if(m_current_token.type == detail::token_type::space) 
+        advance();
+      if(m_current_token.type == detail::token_type::assign) 
+        advance();
+      if(m_current_token.type == detail::token_type::space) 
+        advance();
+
+      while(m_current_token.type != detail::token_type::eof && value_count < max)
+      {
+        if(m_current_token.type == detail::token_type::space)
+        {
+          advance();
+          continue;
+        }
+        if(parse_known())
+          break;
+        if(m_current_token.type != detail::token_type::identifire && 
+            m_current_token.type != detail::token_type::string)
+        {
+          set_unexpected_token(m_current_token.literal, m_current_token.start_pos);
+          res.valid = false;
+          return res;
+        }
+        res.values.push_back(m_current_token.literal);
+        advance();
+        value_count++;
+      }
+      return res;
     }
 
     // checks if peek_token is equal to tt (token wise) if so it advances.
