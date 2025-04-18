@@ -13,3 +13,6 @@ cmake-build-debug/
 
 #current tests its just too bad
 tests/
+
+#current clang format its not ready yet
+.clang-format
