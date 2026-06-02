@@ -1,0 +1,29 @@
+---
+Language:        Cpp
+BasedOnStyle:    LLVM
+IndentWidth:     2
+UseTab:          Never
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterClass:      true
+  AfterFunction:   true
+  AfterEnum:       true
+  AfterControlStatement: true
+  BeforeElse:      true
+  AfterNamespace:  true
+SpaceBeforeParens: Never
+AlwaysBreakBeforeMultilineStrings: false
+ColumnLimit:     80
+IndentCaseLabels: true
+PointerAlignment: Left
+ReferenceAlignment: Left
+SpaceAfterCStyleCast: true
+ContinuationIndentWidth: 2
+ConstructorInitializerIndentWidth: 2
+SpacesInSquareBrackets: false
+SpacesInParentheses: false
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+BreakConstructorInitializers: BeforeColon
+NamespaceIndentation: All
+AllowShortCaseLabelsOnASingleLine: false    # Added to force case statements to break
